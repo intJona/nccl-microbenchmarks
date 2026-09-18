@@ -1,0 +1,8 @@
+build/
+results/
+results.local_backup/
+src/
+.vendor/
+.storage-config
+__pycache__/
+*.log
