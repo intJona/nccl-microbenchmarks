@@ -38,8 +38,11 @@ The internal warm-ups and iterations make a single sweep stable, but repeat the 
 
 ## Results dashboard
 
+The dashboard only needs `streamlit`+`plotly` from `requirements.txt`, not the full `vllm`
+conda environment used for building/running the benchmarks:
+
 ```bash
-conda activate vllm
+pip install -r requirements.txt
 streamlit run dashboard.py
 ```
 
