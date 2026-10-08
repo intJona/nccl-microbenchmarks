@@ -63,8 +63,6 @@ def parse_result(path: Path) -> list[dict[str, float]]:
         return rows
     for match in DATA_LINE.finditer(content):
         parsed = {key: float(match.group(key)) for key in ("size", "time", "algbw", "busbw")}
-        # nccl-tests reports time in microseconds; keep dashboard latency in seconds.
-        parsed["time"] = parsed["time"] / 1_000_000.0
         rows.append(parsed)
     return rows
 
@@ -153,15 +151,18 @@ def chart(title: str, metric: str, unit: str, runs: list[dict], aggregated: dict
 
 
 def decade_sizes(sizes) -> list[float]:
-    """Smallest size recorded in each log10 decade -- regular sample points for a log-scale sweep."""
+    """Smallest size recorded in each log10 decade, plus the overall max -- regular sample points for a
+    log-scale sweep. The max is forced in because it can share a decade with (and get shadowed by) a
+    smaller size, e.g. 256 MB and 128 MB both fall in the 10^8-10^9 decade."""
+    sizes = [size for size in sizes if size > 0]
+    if not sizes:
+        return []
     buckets: dict[int, float] = {}
     for size in sizes:
-        if size <= 0:
-            continue
         decade = math.floor(math.log10(size))
         if decade not in buckets or size < buckets[decade]:
             buckets[decade] = size
-    return sorted(buckets.values())
+    return sorted(set(buckets.values()) | {max(sizes)})
 
 
 def format_size(size: float) -> str:
@@ -215,11 +216,11 @@ def main() -> None:
     st.caption(f"{len(selected_runs)} run(s) across {len(aggregated)} configuration(s). Thin lines are individual runs; solid lines are per-size medians.")
     left, right = st.columns(2)
     with left:
-        st.plotly_chart(chart("All-reduce latency", "time", "s", selected_runs, aggregated), use_container_width=True)
+        st.plotly_chart(chart("All-reduce latency", "time", "us", selected_runs, aggregated), use_container_width=True)
     with right:
         st.plotly_chart(chart("All-reduce bus bandwidth", "busbw", "GB/s", selected_runs, aggregated), use_container_width=True)
 
-    st.subheader("All-reduce latency by decade (s)")
+    st.subheader("All-reduce latency by decade (us)")
     st.dataframe(decade_table(selected_runs, aggregated, "time"), use_container_width=True, hide_index=True)
 
     st.subheader("Bus bandwidth by decade (GB/s)")
