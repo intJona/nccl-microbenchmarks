@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from collections import defaultdict
@@ -151,8 +152,44 @@ def chart(title: str, metric: str, unit: str, runs: list[dict], aggregated: dict
     return figure
 
 
-def metric_at(rows: list[dict[str, float]], size: float, metric: str) -> float | None:
-    return next((row[metric] for row in rows if row["size"] == size), None)
+def decade_sizes(sizes) -> list[float]:
+    """Smallest size recorded in each log10 decade -- regular sample points for a log-scale sweep."""
+    buckets: dict[int, float] = {}
+    for size in sizes:
+        if size <= 0:
+            continue
+        decade = math.floor(math.log10(size))
+        if decade not in buckets or size < buckets[decade]:
+            buckets[decade] = size
+    return sorted(buckets.values())
+
+
+def format_size(size: float) -> str:
+    if size >= 1024 * 1024 and size % (1024 * 1024) == 0:
+        return f"{int(size // (1024 * 1024))} MB"
+    if size >= 1024 and size % 1024 == 0:
+        return f"{int(size // 1024)} KB"
+    return f"{int(size)} B"
+
+
+def decade_table(runs: list[dict], aggregated: dict[str, list[dict[str, float]]], metric: str) -> list[dict]:
+    """One row per config with the metric value at the start of each log-scale decade."""
+    all_sizes = {row["size"] for rows in aggregated.values() for row in rows}
+    decades = decade_sizes(all_sizes)
+    table = []
+    for config in sorted(aggregated):
+        matching_runs = [run for run in runs if run["config"] == config]
+        environment = matching_runs[0]["environment"] if matching_runs else {}
+        value_by_size = {row["size"]: row[metric] for row in aggregated[config]}
+        entry = {
+            "Configuration": config,
+            "Runs": len(matching_runs),
+            "GPU selection": environment.get("cuda_visible_devices", "not recorded"),
+        }
+        for size in decades:
+            entry[format_size(size)] = value_by_size.get(size)
+        table.append(entry)
+    return table
 
 
 def main() -> None:
@@ -182,22 +219,11 @@ def main() -> None:
     with right:
         st.plotly_chart(chart("All-reduce bus bandwidth", "busbw", "GB/s", selected_runs, aggregated), use_container_width=True)
 
-    summary = []
-    for config, rows in aggregated.items():
-        matching_runs = [run for run in selected_runs if run["config"] == config]
-        environment = matching_runs[0]["environment"]
-        summary.append({
-            "Configuration": config,
-            "Runs": len(matching_runs),
-            "8 B latency (s)": metric_at(rows, 8, "time"),
-            "1 KiB latency (s)": metric_at(rows, 1024, "time"),
-            "64 KiB latency (s)": metric_at(rows, 65536, "time"),
-            "1 MiB busbw (GB/s)": metric_at(rows, 1048576, "busbw"),
-            "256 MiB busbw (GB/s)": metric_at(rows, 268435456, "busbw"),
-            "GPU selection": environment.get("cuda_visible_devices", "not recorded"),
-        })
-    st.subheader("Median Summary")
-    st.dataframe(summary, use_container_width=True, hide_index=True)
+    st.subheader("All-reduce latency by decade (s)")
+    st.dataframe(decade_table(selected_runs, aggregated, "time"), use_container_width=True, hide_index=True)
+
+    st.subheader("Bus bandwidth by decade (GB/s)")
+    st.dataframe(decade_table(selected_runs, aggregated, "busbw"), use_container_width=True, hide_index=True)
 
     with st.expander("Captured run metadata"):
         for run in selected_runs:
