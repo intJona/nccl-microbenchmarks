@@ -214,11 +214,9 @@ def main() -> None:
 
     aggregated = aggregate_runs(selected_runs)
     st.caption(f"{len(selected_runs)} run(s) across {len(aggregated)} configuration(s). Thin lines are individual runs; solid lines are per-size medians.")
-    left, right = st.columns(2)
-    with left:
+    with st.expander("Show latency chart"):
         st.plotly_chart(chart("All-reduce latency", "time", "us", selected_runs, aggregated), use_container_width=True)
-    with right:
-        st.plotly_chart(chart("All-reduce bus bandwidth", "busbw", "GB/s", selected_runs, aggregated), use_container_width=True)
+    st.plotly_chart(chart("All-reduce bus bandwidth", "busbw", "GB/s", selected_runs, aggregated), use_container_width=True)
 
     st.subheader("All-reduce latency by decade (us)")
     st.dataframe(decade_table(selected_runs, aggregated, "time"), use_container_width=True, hide_index=True)

@@ -1,66 +1,85 @@
-# PCIe NCCL Microbenchmarks
+# NCCL All-Reduce Sweep
 
-Reproducible two-GPU NCCL microbenchmarks for this workstation. The two RTX 3090 GPUs connect as `NODE` in `nvidia-smi topo -m`, so these runs measure PCIe peer-to-peer collective behavior plus NCCL launch and synchronization overhead, rather than NVLink throughput.
+Two-GPU NCCL all-reduce sweep for comparing PCIe configurations (topology, lane width,
+ACS, switch vs. direct attach, ...). It is a thin wrapper around NVIDIA's
+[nccl-tests](https://github.com/NVIDIA/nccl-tests) `all_reduce_perf`.
 
-This project intentionally reuses the existing `vllm` Conda environment for NCCL 2.28.9 development headers/runtime and uses the installed CUDA 13.3 SDK for compilation. A second environment would duplicate those large packages and risk mixing NCCL ABIs.
+## Why a wrapper?
 
-## First build
+Running `all_reduce_perf` by hand works, but comparing PCIe configurations needs every run to be
+identical and traceable. The scripts handle that:
+
+- **Fixed parameters.** One default sweep (8 B – 256 MiB, same warm-up and iteration counts) is
+  used for every configuration, so differences come from the hardware, not the flags.
+- **Captured environment.** Each run stores the command, GPU model/driver/power/clocks and the
+  `nvidia-smi topo -m` topology next to its output.
+- **Labelled, repeatable runs.** `CONFIG_NAME` names the physical setup and `RUNS` repeats it,
+  one timestamped folder per run.
+- **Build helper.** `build.sh` fetches a pinned `nccl-tests` release and points it at the NCCL
+  already installed in your Python environment, instead of requiring a separate NCCL install.
+- **Shared results location.** Results can be sent to a shared directory (see
+  [Storage](#storage)).
+
+On GPUs without P2P support, NCCL falls back to another transport and the numbers reflect that.
+Run with `NCCL_DEBUG=INFO` to see which path was chosen.
+
+## Requirements
+
+- Linux, 2 NVIDIA GPUs, `nvidia-smi`
+- CUDA toolkit with `nvcc` (set `CUDA_TOOLKIT_ROOT` if it is not at the script's default location)
+- A conda env named `vllm` whose site-packages contain NCCL (`nvidia/nccl`: `nccl.h` and `libnccl.so.2`)
+- `git`, `make`, and internet access for the first build (set `https_proxy` if you are behind a proxy)
+
+`scripts/activate.sh` hard-codes the env name (`vllm`) and the Python version in the
+site-packages path. Edit it to match your system.
+
+## Build (once)
 
 ```bash
-cd "/home/intel/PCIe NCCL Benchmarks"
 conda activate vllm
 ./scripts/build.sh
 ```
 
-`build.sh` downloads the official NVIDIA `nccl-tests` release `v2.16.9`, stages local NCCL-library symlinks under `~/.cache/nccl-tests/` (the upstream Makefiles cannot handle spaces in compiler paths), and builds the executables under `src/nccl-tests/build/`. Override the source tag with `NCCL_TESTS_REF=<tag> ./scripts/build.sh` when needed.
+This clones `nccl-tests` (default `v2.16.9`; override with `NCCL_TESTS_REF=<tag>`), links the
+env's NCCL into `~/.cache/nccl-tests/`, and builds under `src/nccl-tests/build/`.
 
-## Small-message all-reduce
-
-```bash
-./scripts/run_small_messages.sh
-```
-
-This executes `all_reduce_perf` over powers of two from 8 bytes through 1 MiB, using both GPUs, 20 warm-ups, and 100 measured iterations. Results and the exact topology/environment are stored in `results/<UTC timestamp>/`.
-
-The output's `time` column is the latency per collective. `algbw` is useful payload bandwidth and `busbw` accounts for the all-reduce algorithm. For AI-serving-style launch/synchronization sensitivity, compare the 8 B through 64 KiB rows; the larger rows characterize the sustained PCIe collective path.
-
-## Full-range comparison sweep
+## Run a sweep
 
 ```bash
-CONFIG_NAME=node_x16 CUDA_VISIBLE_DEVICES=0,1 ./scripts/run_full_sweep.sh
+CONFIG_NAME=my_config CUDA_VISIBLE_DEVICES=0,1 ./scripts/run_full_sweep.sh
 ```
 
-This runs the same all-reduce configuration from 8 B through 256 MiB (`-b 8 -e 256M -f 2 -g 2 -w 5 -n 20`) for every topology or lane-width comparison. `CONFIG_NAME` identifies the physical configuration in the result directory; `CUDA_VISIBLE_DEVICES` chooses the physical GPU pair. Pass your own `all_reduce_perf` flags as arguments to override the defaults, e.g. `./scripts/run_full_sweep.sh -b 8 -e 256M -f 2 -g 2 -w 5 -n 20`.
+| Variable / argument | Default | Description |
+|---|---|---|
+| `CONFIG_NAME` | `unnamed` | Label for the physical configuration, used in the result folder name |
+| `CUDA_VISIBLE_DEVICES` | all GPUs | Which GPUs to test |
+| `RUNS` | `1` | Repeat the sweep back-to-back; each run gets its own folder |
+| extra arguments | `-b 8 -e 256M -f 2 -g 2 -w 5 -n 20` | Replace the default `all_reduce_perf` flags |
 
-Set `RUNS=<count>` to repeat the sweep back-to-back under the same `CONFIG_NAME`, each producing its own timestamped result directory (default: 1), e.g. `RUNS=3 CONFIG_NAME=node_x16 CUDA_VISIBLE_DEVICES=0,1 ./scripts/run_full_sweep.sh`.
+Example, three repeats with the defaults:
 
-The internal warm-ups and iterations make a single sweep stable, but repeat the full script at least three times per physical configuration when comparing small differences. Keep GPU pair, clocks, power limits, driver, CUDA/NCCL version, and all NCCL environment variables unchanged between configurations.
+```bash
+RUNS=3 CONFIG_NAME=my_config CUDA_VISIBLE_DEVICES=0,1 ./scripts/run_full_sweep.sh
+```
 
-## Results dashboard
+Each run writes `results/<timestamp>_full_sweep_<CONFIG_NAME>/` containing:
 
-The dashboard only needs `streamlit`+`plotly` from `requirements.txt`, not the full `vllm`
-conda environment used for building/running the benchmarks:
+- `environment.txt` — command, GPU info, topology
+- `all_reduce_8B_to_256MiB.txt` — raw `all_reduce_perf` output
+
+## Dashboard
 
 ```bash
 pip install -r requirements.txt
 streamlit run dashboard.py
 ```
 
-The dashboard overlays individual runs and per-size medians for latency and bus bandwidth, then summarizes representative message sizes for every selected configuration. Run every physical configuration at least three times with a distinct `CONFIG_NAME` before comparing medians.
+The dashboard only needs `streamlit` and `plotly`, not the NCCL/CUDA environment.
 
-## Storage location
+## Storage
 
-Results are written to `results/` inside the repo by default, so a fresh clone works with no
-setup. To point at a shared/network location instead (e.g. so results survive a re-clone), copy
-`.storage-config.example` to `.storage-config` (gitignored) and set the path there, or set the
-`NCCL_BENCH_RESULTS_DIR` environment variable. Precedence: env var > `.storage-config` > `results/`.
+Results location, highest priority first:
 
-## Corporate proxy
-
-Use the corporate HTTPS proxy when a build needs to fetch the pinned source:
-
-```bash
-export https_proxy=http://proxy-dmz.intel.com:912
-export HTTPS_PROXY=http://proxy-dmz.intel.com:912
-./scripts/build.sh
-```
+1. `NCCL_BENCH_RESULTS_DIR` environment variable
+2. `.storage-config` (gitignored; copy from `.storage-config.example`)
+3. `./results`
